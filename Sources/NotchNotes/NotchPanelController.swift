@@ -35,7 +35,7 @@ private func installCGEventTap() {
             Task { @MainActor in
                 cgEventMouseLocation = NSPoint(x: loc.x, y: h - loc.y)
             }
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         },
         userInfo: nil
     ) else { return }
@@ -71,16 +71,27 @@ final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
 
 @MainActor
 final class NotchPanelController: NSObject {
-    private let store = NoteStore()
+    private enum Constants {
+        static let mousePollingInterval: TimeInterval = 1.0 / 60.0
+        static let visibilityCheckInterval: TimeInterval = 1.0
+        static let expandFocusDelay: TimeInterval = 0.30
+        static let collapseAnimatedDelay: TimeInterval = 0.18
+        static let collapseScheduleDelay: TimeInterval = 0.22
+        static let expandProtectionWindow: TimeInterval = 0.5
+        static let activationMargin: CGFloat = 6
+        static let stayRegionMargin: CGFloat = 10
+    }
+
+    private let noteStore = NoteStore()
     private let settingsStore = AppSettingsStore()
     private let imageStore = LocalImageStore()
     private let drawerState = DrawerState()
     private let editorInteractionState = EditorInteractionState()
     private lazy var settingsPopoverController = SettingsPopoverController(settingsStore: settingsStore)
-    private let hotPanel: NotchPanel
+    private let compactPanel: NotchPanel
     private let drawerPanel: NotchPanel
     private var hostingView: NSHostingView<NotebookView>?
-    private var hotHostingView: NSHostingView<CompactNotchView>?
+    private var compactHostingView: NSHostingView<CompactNotchView>?
     private var mousePollingTimer: Timer?
     private var visibilityTimer: Timer?
     private var globalMouseDragMonitor: Any?
@@ -91,7 +102,7 @@ final class NotchPanelController: NSObject {
     private var expandTimestamp: TimeInterval = 0
 
     override init() {
-        hotPanel = NotchPanel(
+        compactPanel = NotchPanel(
             contentRect: .zero,
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
@@ -106,7 +117,7 @@ final class NotchPanelController: NSObject {
 
         super.init()
         installCGEventTap()
-        configurePanel(hotPanel)
+        configurePanel(compactPanel)
         configurePanel(drawerPanel)
         rebuildContent()
         startMousePolling()
@@ -123,8 +134,8 @@ final class NotchPanelController: NSObject {
         isExpanded = false
         drawerState.isExpanded = false
         drawerState.revealProgress = 0
-        hotPanel.setFrame(hotFrame(for: layout), display: true)
-        hotPanel.orderFrontRegardless()
+        compactPanel.setFrame(hotFrame(for: layout), display: true)
+        compactPanel.orderFrontRegardless()
         drawerPanel.setFrame(drawerFrame(for: layout), display: true)
         drawerPanel.orderOut(nil)
     }
@@ -139,13 +150,13 @@ final class NotchPanelController: NSObject {
         drawerPanel.setFrame(drawerFrame(for: layout), display: true)
         NSApp.activate(ignoringOtherApps: true)
         drawerPanel.makeKeyAndOrderFront(nil)
-        hotPanel.orderOut(nil)
+        compactPanel.orderOut(nil)
         setDrawerExpanded(true, animated: animated)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.expandFocusDelay) { [weak self] in
             guard let self else { return }
             guard self.isExpanded else { return }
             self.editorInteractionState.restoreSelection(
-                self.store.selectionRange(for: self.store.activeTabID),
+                self.noteStore.selectionRange(for: self.noteStore.activeTabID),
                 searchingIn: self.hostingView
             )
             self.editorInteractionState.requestLayoutRefresh(searchingIn: self.hostingView)
@@ -156,19 +167,19 @@ final class NotchPanelController: NSObject {
     func collapse(animated: Bool) {
         guard isExpanded else { return }
         if let range = editorInteractionState.currentSelectionRange() {
-            store.updateSelection(for: store.activeTabID, range: range)
+            noteStore.updateSelection(for: noteStore.activeTabID, range: range)
         }
         settingsPopoverController.close(animated: false)
         isExpanded = false
         setDrawerExpanded(false, animated: animated)
-        let delay: TimeInterval = animated ? 0.18 : 0
+        let delay: TimeInterval = animated ? Constants.collapseAnimatedDelay : 0
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             guard !self.isExpanded else { return }
             let layout = self.currentLayout()
             self.drawerPanel.orderOut(nil)
-            self.hotPanel.setFrame(self.hotFrame(for: layout), display: true)
-            self.hotPanel.orderFrontRegardless()
+            self.compactPanel.setFrame(self.hotFrame(for: layout), display: true)
+            self.compactPanel.orderFrontRegardless()
         }
     }
 
@@ -189,7 +200,7 @@ final class NotchPanelController: NSObject {
         let layout = layout ?? currentLayout()
         let hotView = CompactNotchView(layout: layout)
         let view = NotebookView(
-            store: store,
+            store: noteStore,
             settingsStore: settingsStore,
             imageStore: imageStore,
             drawerState: drawerState,
@@ -198,15 +209,15 @@ final class NotchPanelController: NSObject {
             onOpenSettings: { [weak self] in self?.openSettingsPopover() }
         )
 
-        if let hotHostingView {
-            hotHostingView.rootView = hotView
+        if let compactHostingView {
+            compactHostingView.rootView = hotView
         } else {
             let host = FirstMouseHostingView(rootView: hotView)
             host.translatesAutoresizingMaskIntoConstraints = false
             host.wantsLayer = true
             host.layer?.masksToBounds = true
-            hotPanel.contentView = host
-            hotHostingView = host
+            compactPanel.contentView = host
+            compactHostingView = host
         }
 
         if let hostingView {
@@ -241,7 +252,7 @@ final class NotchPanelController: NSObject {
 
     private func startMousePolling() {
         let timer = Timer(
-            timeInterval: 1.0 / 60.0,
+            timeInterval: Constants.mousePollingInterval,
             target: self,
             selector: #selector(mousePollingTick),
             userInfo: nil,
@@ -253,7 +264,7 @@ final class NotchPanelController: NSObject {
 
     private func startVisibilityWatchdog() {
         let timer = Timer(
-            timeInterval: 1.0,
+            timeInterval: Constants.visibilityCheckInterval,
             target: self,
             selector: #selector(visibilityWatchdogTick),
             userInfo: nil,
@@ -265,8 +276,8 @@ final class NotchPanelController: NSObject {
 
     @objc private func visibilityWatchdogTick(_ timer: Timer) {
         guard !isExpanded else { return }
-        hotPanel.setFrame(hotFrame(for: currentLayout()), display: true)
-        hotPanel.orderFrontRegardless()
+        compactPanel.setFrame(hotFrame(for: currentLayout()), display: true)
+        compactPanel.orderFrontRegardless()
     }
 
     private func observeScreenChanges() {
@@ -279,7 +290,7 @@ final class NotchPanelController: NSObject {
     }
 
     private func observePanelMouseEvents() {
-        hotPanel.onMouseEvent = { [weak self] event in
+        compactPanel.onMouseEvent = { [weak self] event in
             guard let self else { return }
             guard event.type == .leftMouseDown else { return }
             self.expand(animated: true)
@@ -324,10 +335,10 @@ final class NotchPanelController: NSObject {
         let layout = currentLayout()
         cancelCollapse()
         rebuildContent(layout: layout)
-        hotPanel.setFrame(hotFrame(for: layout), display: true)
+        compactPanel.setFrame(hotFrame(for: layout), display: true)
         drawerPanel.setFrame(drawerFrame(for: layout), display: true)
         if !isExpanded {
-            hotPanel.orderFrontRegardless()
+            compactPanel.orderFrontRegardless()
         }
     }
 
@@ -362,7 +373,7 @@ final class NotchPanelController: NSObject {
             }
 
             let elapsed = ProcessInfo.processInfo.systemUptime - expandTimestamp
-            if elapsed < 0.5 {
+            if elapsed < Constants.expandProtectionWindow {
                 cancelCollapse()
                 return
             }
@@ -396,7 +407,7 @@ final class NotchPanelController: NSObject {
         }
 
         collapseTask = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: task)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.collapseScheduleDelay, execute: task)
     }
 
     private func cancelCollapse() {
@@ -406,7 +417,7 @@ final class NotchPanelController: NSObject {
 
     private func activationFrame() -> NSRect {
         let layout = currentLayout()
-        let frame = hotPanel.frame
+        let frame = compactPanel.frame
         let base: NSRect
         if frame.width > 0, frame.height > 0 {
             base = frame
@@ -414,12 +425,12 @@ final class NotchPanelController: NSObject {
             base = hotFrame(for: layout)
         }
 
-        let margin: CGFloat = 6
+        let margin: CGFloat = Constants.activationMargin
         return base.insetBy(dx: -margin, dy: -margin)
     }
 
     private func isPointInExpandedStayRegion(_ point: NSPoint) -> Bool {
-        let margin: CGFloat = 10
+        let margin: CGFloat = Constants.stayRegionMargin
         if drawerPanel.frame.insetBy(dx: -margin, dy: -margin).contains(point) { return true }
         if activationFrame().contains(point) { return true }
         if settingsPopoverController.contains(point) { return true }
@@ -433,7 +444,7 @@ final class NotchPanelController: NSObject {
 
     private func ensureHotPanelVisible() {
         guard !isExpanded else { return }
-        hotPanel.orderFrontRegardless()
+        compactPanel.orderFrontRegardless()
     }
 
     private func currentLayout() -> NotchLayout {
@@ -446,13 +457,13 @@ final class NotchPanelController: NSObject {
 
     private func hotFrame(for layout: NotchLayout) -> NSRect {
         let screen = targetScreen()
-        let screenFrame = screen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let screenFrame = screen?.frame ?? NotchGeometry.fallbackScreenFrame
         return frame(for: layout.compactSize, topY: screenFrame.maxY + layout.compactTopOffset, in: screenFrame)
     }
 
     private func drawerFrame(for layout: NotchLayout) -> NSRect {
         let screen = targetScreen()
-        let screenFrame = screen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let screenFrame = screen?.frame ?? NotchGeometry.fallbackScreenFrame
         let topY = screenFrame.maxY + layout.expandedTopOffset
         return frame(for: layout.expandedSize, topY: topY, in: screenFrame)
     }

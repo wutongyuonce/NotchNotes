@@ -4,6 +4,8 @@ NotchNotes is a small native macOS note app that lives at the top edge of your M
 
 This is originally a fork of [NotchNotes](https://github.com/oil-oil/NotchNotes). I fixed some bugs and optimized its performance.
 
+![image-20260607194239416](img/image-20260607194239416.png)
+
 ## Download
 
 - [Download the latest release](https://github.com/wutongyuonce/NotchNotes/releases/latest)

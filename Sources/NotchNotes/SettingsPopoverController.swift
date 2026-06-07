@@ -27,8 +27,8 @@ final class SettingsPopoverController: NSObject, NSWindowDelegate {
         }
         suppressShowUntil = nil
 
-        if let panel {
-            close(panel, animated: true)
+        if panel != nil {
+            closeCurrentPanel(animated: true, suppressImmediateReopen: false)
             return
         }
 
@@ -72,14 +72,8 @@ final class SettingsPopoverController: NSObject, NSWindowDelegate {
         }
     }
 
-    func close() {
-        guard let panel else { return }
-        close(panel, animated: true)
-    }
-
-    func close(animated: Bool) {
-        guard let panel else { return }
-        close(panel, animated: animated)
+    func close(animated: Bool = true) {
+        closeCurrentPanel(animated: animated, suppressImmediateReopen: false)
     }
 
     func contains(_ point: NSPoint) -> Bool {
@@ -92,31 +86,24 @@ final class SettingsPopoverController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        close(animated: true, suppressImmediateReopen: true)
+        closeCurrentPanel(animated: true, suppressImmediateReopen: true)
     }
 
-    private func close(animated: Bool, suppressImmediateReopen: Bool) {
+    private func closeCurrentPanel(animated: Bool, suppressImmediateReopen: Bool) {
         guard let panel else { return }
-        close(panel, animated: animated, suppressImmediateReopen: suppressImmediateReopen)
-    }
-
-    private func close(_ panel: SettingsPopoverPanel, animated: Bool, suppressImmediateReopen: Bool = false) {
         removeOutsideClickMonitor()
         if suppressImmediateReopen {
             suppressShowUntil = Date(timeIntervalSinceNow: 0.25)
         }
         let finalOrigin = NSPoint(x: panel.frame.minX, y: panel.frame.minY + 8)
 
-        guard animated else {
-            if self.panel === panel {
-                self.panel = nil
-            }
-            panel.close()
-            return
-        }
-
         if self.panel === panel {
             self.panel = nil
+        }
+
+        guard animated else {
+            panel.close()
+            return
         }
 
         NSAnimationContext.runAnimationGroup { context in
@@ -126,14 +113,16 @@ final class SettingsPopoverController: NSObject, NSWindowDelegate {
             panel.animator().setFrameOrigin(finalOrigin)
         }
 
-        panel.perform(#selector(NSWindow.close), with: nil, afterDelay: 0.13)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) {
+            panel.close()
+        }
     }
 
     private func origin(relativeTo parentWindow: NSWindow?) -> NSPoint {
         let parentFrame = parentWindow?.frame
             ?? NotchGeometry.targetScreen()?.frame
             ?? NSScreen.main?.frame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            ?? NotchGeometry.fallbackScreenFrame
 
         let screenFrame = parentWindow?.screen?.frame
             ?? NotchGeometry.targetScreen()?.frame
@@ -157,14 +146,14 @@ final class SettingsPopoverController: NSObject, NSWindowDelegate {
             guard let self else { return event }
             guard let panel = self.panel else { return event }
             if event.window !== panel, !self.contains(NSEvent.mouseLocation) {
-                self.close(panel, animated: true, suppressImmediateReopen: true)
+                self.closeCurrentPanel(animated: true, suppressImmediateReopen: true)
             }
             return event
         }
 
         globalOutsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
-                self?.close(animated: true, suppressImmediateReopen: true)
+                self?.closeCurrentPanel(animated: true, suppressImmediateReopen: true)
             }
         }
     }

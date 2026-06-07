@@ -25,6 +25,8 @@ final class NoteStore: ObservableObject {
     private static let legacyTextKey = "notchNotes.text"
     private static let tabsKey = "notchNotes.tabs.v1"
     private static let activeTabIDKey = "notchNotes.activeTabID"
+    private static let saveDebounceInterval: TimeInterval = 0.5
+    private var saveTimer: Timer?
 
     init() {
         let storedTabs = Self.loadStoredTabs()
@@ -55,7 +57,7 @@ final class NoteStore: ObservableObject {
     func updateText(_ nextText: String) {
         tabs[activeIndex].text = nextText
         clampSelection(for: tabs[activeIndex].id)
-        save()
+        scheduleSave()
     }
 
     func clear() {
@@ -111,16 +113,22 @@ final class NoteStore: ObservableObject {
     private func clampSelection(for id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let range = NSRange(location: tabs[index].selectionLocation ?? 0, length: tabs[index].selectionLength ?? 0)
-        let clamped = clampedRange(range, text: tabs[index].text)
+        let clamped = range.clamped(to: (tabs[index].text as NSString).length)
         tabs[index].selectionLocation = clamped.location
         tabs[index].selectionLength = clamped.length
     }
 
     private func clampedRange(_ range: NSRange, text: String) -> NSRange {
-        let length = (text as NSString).length
-        let location = min(max(range.location, 0), length)
-        let selectionLength = min(max(range.length, 0), length - location)
-        return NSRange(location: location, length: selectionLength)
+        range.clamped(to: (text as NSString).length)
+    }
+
+    private func scheduleSave() {
+        saveTimer?.invalidate()
+        saveTimer = Timer.scheduledTimer(withTimeInterval: Self.saveDebounceInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.save()
+            }
+        }
     }
 
     private func save() {
@@ -137,5 +145,13 @@ final class NoteStore: ObservableObject {
             return []
         }
         return tabs
+    }
+}
+
+extension NSRange {
+    func clamped(to textLength: Int) -> NSRange {
+        let location = min(max(location, 0), textLength)
+        let length = min(max(self.length, 0), textLength - location)
+        return NSRange(location: location, length: length)
     }
 }

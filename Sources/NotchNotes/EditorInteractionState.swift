@@ -1,50 +1,18 @@
 import AppKit
-import SwiftUI
-
-enum MarkdownCommand: CaseIterable, Identifiable {
-    case bold
-    case italic
-    case strikethrough
-    case inlineCode
-    case link
-    case quote
-    case unorderedList
-    case orderedList
-    case todoList
-
-    var id: String {
-        switch self {
-        case .bold: return "bold"
-        case .italic: return "italic"
-        case .strikethrough: return "strikethrough"
-        case .inlineCode: return "inlineCode"
-        case .link: return "link"
-        case .quote: return "quote"
-        case .unorderedList: return "unorderedList"
-        case .orderedList: return "orderedList"
-        case .todoList: return "todoList"
-        }
-    }
-
-    var help: String {
-        switch self {
-        case .bold: return "Bold"
-        case .italic: return "Italic"
-        case .strikethrough: return "Strikethrough"
-        case .inlineCode: return "Inline code"
-        case .link: return "Link"
-        case .quote: return "Quote"
-        case .unorderedList: return "Bulleted list"
-        case .orderedList: return "Numbered list"
-        case .todoList: return "Todo list"
-        }
-    }
-}
 
 @MainActor
 final class EditorInteractionState: ObservableObject {
     @Published private(set) var isDraggingSelection = false
     var onSelectionChange: ((NSRange) -> Void)?
+
+    private enum Timing {
+        static let maxFocusAttempts = 8
+        static let retryPasses = 4
+        static let initialRetryDelay: TimeInterval = 0.02
+        static let selectionRestoreDelay: TimeInterval = 0.05
+        static let layoutRefreshDelay: TimeInterval = 0.06
+        static let focusRetryDelay: TimeInterval = 0.05
+    }
 
     private weak var textView: NSTextView?
     private weak var observedSelectionTextView: NSTextView?
@@ -71,7 +39,7 @@ final class EditorInteractionState: ObservableObject {
     func requestFocus(searchingIn rootView: NSView?) {
         refreshTextView(searchingIn: rootView)
         pendingFocus = true
-        focusAttemptsRemaining = 8
+        focusAttemptsRemaining = Timing.maxFocusAttempts
 
         retryFocus(searchingIn: rootView)
     }
@@ -88,7 +56,7 @@ final class EditorInteractionState: ObservableObject {
 
         selectionRestoreGeneration += 1
         let generation = selectionRestoreGeneration
-        scheduleSelectionRestore(range: range, generation: generation, remainingPasses: 4, searchingIn: rootView)
+        scheduleSelectionRestore(range: range, generation: generation, remainingPasses: Timing.retryPasses, searchingIn: rootView)
     }
 
     func requestLayoutRefresh(searchingIn rootView: NSView? = nil, resetScroll: Bool = false) {
@@ -98,7 +66,7 @@ final class EditorInteractionState: ObservableObject {
 
         layoutRefreshGeneration += 1
         let generation = layoutRefreshGeneration
-        scheduleLayoutRefresh(generation: generation, remainingPasses: 4, searchingIn: rootView, resetScroll: resetScroll)
+        scheduleLayoutRefresh(generation: generation, remainingPasses: Timing.retryPasses, searchingIn: rootView, resetScroll: resetScroll)
     }
 
     func currentSelectionRange() -> NSRange? {
@@ -264,10 +232,7 @@ final class EditorInteractionState: ObservableObject {
 
     private func safeSelectedRange(in textView: NSTextView) -> NSRange {
         let fullLength = (textView.string as NSString).length
-        let selectedRange = textView.selectedRange()
-        let location = min(max(selectedRange.location, 0), fullLength)
-        let length = min(max(selectedRange.length, 0), fullLength - location)
-        return NSRange(location: location, length: length)
+        return textView.selectedRange().clamped(to: fullLength)
     }
 
     private func scheduleSelectionRestore(
@@ -276,7 +241,7 @@ final class EditorInteractionState: ObservableObject {
         remainingPasses: Int,
         searchingIn rootView: NSView?
     ) {
-        let delay: TimeInterval = remainingPasses == 4 ? 0.02 : 0.05
+        let delay: TimeInterval = remainingPasses == Timing.retryPasses ? Timing.initialRetryDelay : Timing.selectionRestoreDelay
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak rootView] in
             guard let self, self.selectionRestoreGeneration == generation else { return }
             if let rootView {
@@ -308,10 +273,7 @@ final class EditorInteractionState: ObservableObject {
     }
 
     private func clampedRange(_ range: NSRange, in textView: NSTextView) -> NSRange {
-        let fullLength = (textView.string as NSString).length
-        let location = min(max(range.location, 0), fullLength)
-        let length = min(max(range.length, 0), fullLength - location)
-        return NSRange(location: location, length: length)
+        range.clamped(to: (textView.string as NSString).length)
     }
 
     private func scheduleLayoutRefresh(
@@ -320,13 +282,13 @@ final class EditorInteractionState: ObservableObject {
         searchingIn rootView: NSView?,
         resetScroll: Bool
     ) {
-        let delay: TimeInterval = remainingPasses == 4 ? 0.02 : 0.06
+        let delay: TimeInterval = remainingPasses == Timing.retryPasses ? Timing.initialRetryDelay : Timing.layoutRefreshDelay
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak rootView] in
             guard let self, self.layoutRefreshGeneration == generation else { return }
             if let rootView {
                 self.refreshTextView(searchingIn: rootView)
             }
-            self.applyLayoutRefresh(resetScroll: resetScroll && remainingPasses == 4)
+            self.applyLayoutRefresh(resetScroll: resetScroll && remainingPasses == Timing.retryPasses)
 
             guard remainingPasses > 1 else { return }
             self.scheduleLayoutRefresh(
@@ -366,7 +328,7 @@ final class EditorInteractionState: ObservableObject {
     }
 
     private func retryFocus(searchingIn rootView: NSView?) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak rootView] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.focusRetryDelay) { [weak self, weak rootView] in
             guard let self, self.pendingFocus else { return }
             self.refreshTextView(searchingIn: rootView)
 
@@ -410,56 +372,4 @@ final class EditorInteractionState: ObservableObject {
         return textView.bounds.contains(location)
     }
 
-}
-
-struct EditorFocusBinder: NSViewRepresentable {
-    let state: EditorInteractionState
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        bind(from: view)
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        bind(from: view)
-    }
-
-    private func bind(from view: NSView) {
-        DispatchQueue.main.async {
-            let container = view.superview
-            let textView = container?.firstDescendant(ofType: NSTextView.self)
-                ?? view.firstAncestorDescendant(ofType: NSTextView.self)
-            state.bind(containerView: container, textView: textView)
-        }
-    }
-}
-
-private extension NSView {
-    func firstDescendant<T: NSView>(ofType type: T.Type) -> T? {
-        if let match = self as? T {
-            return match
-        }
-
-        for subview in subviews {
-            if let match = subview.firstDescendant(ofType: type) {
-                return match
-            }
-        }
-
-        return nil
-    }
-
-    func firstAncestorDescendant<T: NSView>(ofType type: T.Type) -> T? {
-        var current: NSView? = self
-
-        while let view = current {
-            if let match = view.firstDescendant(ofType: type) {
-                return match
-            }
-            current = view.superview
-        }
-
-        return nil
-    }
 }

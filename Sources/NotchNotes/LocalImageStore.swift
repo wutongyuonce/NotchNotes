@@ -71,8 +71,8 @@ final class LocalImageStore: EmbeddedImageFileProvider, @unchecked Sendable {
         }
 
         lock.lock()
+        defer { lock.unlock() }
         let record = records[candidateName]
-        lock.unlock()
 
         if let record {
             let url = directoryURL.appendingPathComponent(record.storedFilename)
@@ -89,8 +89,8 @@ final class LocalImageStore: EmbeddedImageFileProvider, @unchecked Sendable {
         }
 
         lock.lock()
+        defer { lock.unlock() }
         let path = records[candidateName]?.originalPath
-        lock.unlock()
 
         guard let path else { return nil }
         let url = URL(fileURLWithPath: path)
