@@ -76,10 +76,7 @@ final class NotchPanelController: NSObject {
         static let visibilityCheckInterval: TimeInterval = 1.0
         static let expandFocusDelay: TimeInterval = 0.30
         static let collapseAnimatedDelay: TimeInterval = 0.18
-        static let collapseScheduleDelay: TimeInterval = 0.22
-        static let expandProtectionWindow: TimeInterval = 0.5
         static let activationMargin: CGFloat = 6
-        static let stayRegionMargin: CGFloat = 10
     }
 
     private let noteStore = NoteStore()
@@ -96,10 +93,9 @@ final class NotchPanelController: NSObject {
     private var visibilityTimer: Timer?
     private var globalMouseDragMonitor: Any?
     private var globalMouseUpMonitor: Any?
+    private var globalClickMonitor: Any?
     private var isExpanded = false
     private var activeMenuTrackingCount = 0
-    private var collapseTask: DispatchWorkItem?
-    private var expandTimestamp: TimeInterval = 0
 
     override init() {
         compactPanel = NotchPanel(
@@ -145,7 +141,6 @@ final class NotchPanelController: NSObject {
         let layout = currentLayout()
         cancelCollapse()
         isExpanded = true
-        expandTimestamp = ProcessInfo.processInfo.systemUptime
         rebuildContent(layout: layout)
         drawerPanel.setFrame(drawerFrame(for: layout), display: true)
         NSApp.activate(ignoringOtherApps: true)
@@ -189,7 +184,7 @@ final class NotchPanelController: NSObject {
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
@@ -298,6 +293,7 @@ final class NotchPanelController: NSObject {
 
         drawerPanel.onMouseEvent = { [weak self] event in
             guard let self else { return }
+            // 点击 drawerPanel 内部时，处理编辑器交互
             self.editorInteractionState.handleMouseEvent(event, searchingIn: self.hostingView)
         }
     }
@@ -314,6 +310,22 @@ final class NotchPanelController: NSObject {
                 self?.editorInteractionState.noteGlobalMouseUp()
             }
         }
+
+        // 点击外部区域时缩回 - 全局监控（点击不在 NotchNotes 窗口内）
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            Task { @MainActor in
+                guard let self, self.isExpanded else { return }
+                self.handleOutsideClick()
+            }
+        }
+    }
+
+    private func handleOutsideClick() {
+        guard isExpanded else { return }
+        // 确保点击不在设置弹窗内
+        let clickLocation = NSEvent.mouseLocation
+        if settingsPopoverController.contains(clickLocation) { return }
+        collapse(animated: true)
     }
 
     private func observeMenuTracking() {
@@ -362,6 +374,7 @@ final class NotchPanelController: NSObject {
 
     private func handleMouseLocation(_ point: NSPoint) {
         if isExpanded {
+            // 只在菜单跟踪和拖拽选择时取消折叠，不再自动缩回
             if activeMenuTrackingCount > 0 {
                 cancelCollapse()
                 return
@@ -370,18 +383,6 @@ final class NotchPanelController: NSObject {
             if editorInteractionState.isDraggingSelection {
                 cancelCollapse()
                 return
-            }
-
-            let elapsed = ProcessInfo.processInfo.systemUptime - expandTimestamp
-            if elapsed < Constants.expandProtectionWindow {
-                cancelCollapse()
-                return
-            }
-
-            if isPointInExpandedStayRegion(point) {
-                cancelCollapse()
-            } else {
-                scheduleCollapse()
             }
             return
         }
@@ -394,25 +395,8 @@ final class NotchPanelController: NSObject {
         }
     }
 
-    private func scheduleCollapse() {
-        guard collapseTask == nil else { return }
-
-        let task = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.collapseTask = nil
-            guard !self.editorInteractionState.isDraggingSelection else { return }
-            guard !self.isPointInExpandedStayRegion(cgEventMouseLocation) else { return }
-            self.activeMenuTrackingCount = 0
-            self.collapse(animated: true)
-        }
-
-        collapseTask = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.collapseScheduleDelay, execute: task)
-    }
-
     private func cancelCollapse() {
-        collapseTask?.cancel()
-        collapseTask = nil
+        // No-op: 已移除自动缩回逻辑
     }
 
     private func activationFrame() -> NSRect {
@@ -427,14 +411,6 @@ final class NotchPanelController: NSObject {
 
         let margin: CGFloat = Constants.activationMargin
         return base.insetBy(dx: -margin, dy: -margin)
-    }
-
-    private func isPointInExpandedStayRegion(_ point: NSPoint) -> Bool {
-        let margin: CGFloat = Constants.stayRegionMargin
-        if drawerPanel.frame.insetBy(dx: -margin, dy: -margin).contains(point) { return true }
-        if activationFrame().contains(point) { return true }
-        if settingsPopoverController.contains(point) { return true }
-        return false
     }
 
     private func openSettingsPopover() {
