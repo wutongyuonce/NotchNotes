@@ -444,7 +444,17 @@ final class NotchPanelController: NSObject {
 
     private func ensureHotPanelVisible() {
         guard !isExpanded else { return }
+        // 确保 drawerPanel 不会遮挡 compactPanel
+        // 在折叠动画期间，drawerPanel 可能还未隐藏
+        if drawerPanel.isVisible {
+            drawerPanel.orderOut(nil)
+        }
         compactPanel.orderFrontRegardless()
+        // 在 Click 模式下，确保 compactPanel 能接收鼠标事件
+        // 仅在 panel 未成为 key window 时才调用，避免重复激活
+        if settingsStore.triggerMode == .click, !compactPanel.isKeyWindow {
+            compactPanel.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func currentLayout() -> NotchLayout {
